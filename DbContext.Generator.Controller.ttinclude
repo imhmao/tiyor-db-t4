@@ -1,0 +1,794 @@
+﻿<#
+    // T4 实体生成核心
+ #>
+<#@ assembly name="EnvDTE.dll" #>
+<#@ assembly name="System.Core.dll" #>
+<#@ assembly name="System.Data" #>
+<#@ assembly name="System.Xml" #>
+<#@ assembly name="System.Configuration" #>
+<#@ assembly name="System.Windows.Forms" #>
+<#@ assembly name="Microsoft.CSharp.dll" #>
+<#@ import namespace="System" #>
+<#@ import namespace="System.Collections.Generic" #>
+<#@ import namespace="System.Data" #>
+<#@ import namespace="System.Data.Common" #>
+<#@ import namespace="System.IO" #>
+<#@ import namespace="System.Linq" #>
+<#@ import namespace="System.Text" #>
+<#@ import namespace="System.Text.RegularExpressions" #>
+<#@ import namespace="System.Data.SqlClient" #>
+<#@ import namespace="System.Data.Common" #>
+<#@ import namespace="System.Diagnostics" #>
+<#@ import namespace="System.Globalization" #>
+<#@ import namespace="System.IO" #>
+<#@ import namespace="System.Linq" #>
+<#@ import namespace="System.Text" #>
+<#@ import namespace="System.Text.RegularExpressions" #>
+<#@ import namespace="System.Configuration" #>
+<#@ import namespace="System.Windows.Forms" #>
+<#@ import namespace="Microsoft.VisualStudio.TextTemplating.VSHost" #>
+
+<#+
+    public class SqlServerSchemaReader
+    {
+        static Regex rxCleanUp = new Regex(@"[^\w\d_]", RegexOptions.Compiled);
+
+        static string[] cs_keywords = { "abstract", "event", "new", "struct", "as", "explicit", "null",
+     "switch", "base", "extern", "object", "this", "bool", "false", "operator", "throw",
+     "break", "finally", "out", "true", "byte", "fixed", "override", "try", "case", "float",
+     "params", "typeof", "catch", "for", "private", "uint", "char", "foreach", "protected",
+     "ulong", "checked", "goto", "public", "unchecked", "class", "if", "readonly", "unsafe",
+     "const", "implicit", "ref", "ushort", "continue", "in", "return", "using", "decimal",
+     "int", "sbyte", "virtual", "default", "interface", "sealed", "volatile", "delegate",
+     "internal", "short", "void", "do", "is", "sizeof", "while", "double", "lock",
+     "stackalloc", "else", "long", "static", "enum", "namespace", "string" };
+
+        static Func<string, string> CleanUp = (str) =>
+        {
+            str = rxCleanUp.Replace(str, "_");
+
+            if (char.IsDigit(str[0]) || cs_keywords.Contains(str))
+                str = "@" + str;
+
+            return str;
+        };
+
+
+        // SchemaReader.ReadSchema
+        public List<TableText> ReadSchema(DbConnection connection, DbProviderFactory factory, List<TableText> tabs, string[] sel)
+        {
+            _connection = connection;
+            _factory = factory;
+
+            var cmd = _factory.CreateCommand();
+            cmd.Connection = connection;
+            cmd.CommandText = TABLE_SQL;
+
+            //pull the tables in a reader
+            using (cmd)
+            {
+
+                using (var rdr = cmd.ExecuteReader())
+                {
+                    while (rdr.Read())
+                    {
+                        string tbName = rdr["TABLE_NAME"].ToString();
+                        if (sel != null && !sel.Any(st => string.Compare(st, tbName, true) == 0))
+                            continue;
+
+                        TableText tbl = new TableText();
+                        tbl.Name = tbName;
+                        tbl.Schema = rdr["TABLE_SCHEMA"].ToString();
+                        tbl.IsView = string.Compare(rdr["TABLE_TYPE"].ToString(), "View", true) == 0;
+                        tbl.CleanName = CleanUp(tbl.Name);
+                        tbl.ClassName = tbl.CleanName;
+
+                        tabs.Add(tbl);
+                    }
+                }
+            }
+
+            foreach (var tbl in tabs)
+            {
+                tbl.Columns = LoadColumns(tbl);
+
+                // Mark the primary key
+                string PrimaryKey = GetPK(tbl.Name);
+                var pkColumn = tbl.Columns.SingleOrDefault(x => x.Name.ToLower().Trim() == PrimaryKey.ToLower().Trim());
+                if (pkColumn != null)
+                {
+                    if (pkColumn.Name.IndexOf('_') > -1)
+                    {
+                        string guidpk = string.Format("{0}_guid", pkColumn.Name.Split('_')[0]);
+                        var guidPk = tbl.Columns.SingleOrDefault(x => x.Name.ToLower().Trim() == guidpk.ToLower().Trim());
+                        if (guidPk != null)
+                            pkColumn = guidPk;
+                    }
+
+                    pkColumn.IsPK = true;
+                }
+            }
+
+
+            return tabs;
+        }
+
+        DbConnection _connection;
+        DbProviderFactory _factory;
+
+
+        List<ColumnText> LoadColumns(TableText tbl)
+        {
+
+            using (var cmd = _factory.CreateCommand())
+            {
+                cmd.Connection = _connection;
+                cmd.CommandText = COLUMN_SQL;
+
+                var p = cmd.CreateParameter();
+                p.ParameterName = "@tableName";
+                p.Value = tbl.Name;
+                cmd.Parameters.Add(p);
+
+                p = cmd.CreateParameter();
+                p.ParameterName = "@schemaName";
+                p.Value = tbl.Schema;
+                cmd.Parameters.Add(p);
+
+                var result = new List<ColumnText>();
+                using (IDataReader rdr = cmd.ExecuteReader())
+                {
+                    while (rdr.Read())
+                    {
+                        ColumnText col = new ColumnText();
+                        col.Name = rdr["ColumnName"].ToString();
+                        col.PropertyName = CleanUp(col.Name);
+                        col.PropertyType = GetPropertyType(rdr["DataType"].ToString());
+                        col.IsNullable = rdr["IsNullable"].ToString() == "YES";
+                        col.IsAutoIncrement = ((int)rdr["IsIdentity"]) == 1 ||
+                                (!DBNull.Value.Equals(rdr["DefaultSetting"]) && ((string)rdr["DefaultSetting"] == "(newsequentialid())" ||
+                                (string)rdr["DefaultSetting"] == "(newid())"));
+                        result.Add(col);
+                    }
+                }
+
+                return result;
+            }
+        }
+
+        string GetPK(string table)
+        {
+
+            string sql = @"SELECT c.name AS ColumnName
+                FROM sys.indexes AS i 
+                INNER JOIN sys.index_columns AS ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id 
+                INNER JOIN sys.objects AS o ON i.object_id = o.object_id 
+                LEFT OUTER JOIN sys.columns AS c ON ic.object_id = c.object_id AND c.column_id = ic.column_id
+                WHERE (i.is_primary_key = 1) AND (o.name = @tableName)";
+
+            using (var cmd = _factory.CreateCommand())
+            {
+                cmd.Connection = _connection;
+                cmd.CommandText = sql;
+
+                var p = cmd.CreateParameter();
+                p.ParameterName = "@tableName";
+                p.Value = table;
+                cmd.Parameters.Add(p);
+
+                var result = cmd.ExecuteScalar();
+
+                if (result != null)
+                    return result.ToString();
+            }
+
+            return "";
+        }
+
+        string GetPropertyType(string sqlType)
+        {
+            string sysType = "string";
+            switch (sqlType)
+            {
+                case "bigint":
+                    sysType = "long";
+                    break;
+                case "smallint":
+                    sysType = "short";
+                    break;
+                case "int":
+                    sysType = "int";
+                    break;
+                case "uniqueidentifier":
+                    sysType = "Guid";
+                    break;
+                case "smalldatetime":
+                case "datetime":
+                case "datetime2":
+                case "date":
+                case "time":
+                    sysType = "DateTime";
+                    break;
+                case "datetimeoffset":
+                    sysType = "DateTimeOffset";
+                    break;
+                case "float":
+                    sysType = "double";
+                    break;
+                case "real":
+                    sysType = "float";
+                    break;
+                case "numeric":
+                case "smallmoney":
+                case "decimal":
+                case "money":
+                    sysType = "decimal";
+                    break;
+                case "tinyint":
+                    sysType = "byte";
+                    break;
+                case "bit":
+                    sysType = "bool";
+                    break;
+                case "image":
+                case "binary":
+                case "varbinary":
+                case "timestamp":
+                    sysType = "byte[]";
+                    break;
+                case "geography":
+                    sysType = "Microsoft.SqlServer.Types.SqlGeography";
+                    break;
+                case "geometry":
+                    sysType = "Microsoft.SqlServer.Types.SqlGeometry";
+                    break;
+            }
+            return sysType;
+        }
+
+
+
+        const string TABLE_SQL = @"SELECT *
+		FROM  INFORMATION_SCHEMA.TABLES
+		WHERE TABLE_TYPE='BASE TABLE' OR TABLE_TYPE='VIEW'
+		ORDER BY TABLE_SCHEMA,TABLE_TYPE,TABLE_NAME";
+
+        const string COLUMN_SQL = @"SELECT 
+			TABLE_CATALOG AS [Database],
+			TABLE_SCHEMA AS Owner, 
+			TABLE_NAME AS TableName, 
+			COLUMN_NAME AS ColumnName, 
+			ORDINAL_POSITION AS OrdinalPosition, 
+			COLUMN_DEFAULT AS DefaultSetting, 
+			IS_NULLABLE AS IsNullable, DATA_TYPE AS DataType, 
+			CHARACTER_MAXIMUM_LENGTH AS MaxLength, 
+			DATETIME_PRECISION AS DatePrecision,
+			COLUMNPROPERTY(object_id('[' + TABLE_SCHEMA + '].[' + TABLE_NAME + ']'), COLUMN_NAME, 'IsIdentity') AS IsIdentity,
+			COLUMNPROPERTY(object_id('[' + TABLE_SCHEMA + '].[' + TABLE_NAME + ']'), COLUMN_NAME, 'IsComputed') as IsComputed
+		FROM  INFORMATION_SCHEMA.COLUMNS
+		WHERE TABLE_NAME=@tableName AND TABLE_SCHEMA=@schemaName
+		ORDER BY OrdinalPosition ASC";
+
+    }
+
+    /// <summary>
+    /// 表属性
+    /// </summary>
+    public class TableText
+    {
+        public TableText()
+        {
+            this.Columns = new List<ColumnText>();
+        }
+
+        public List<ColumnText> Columns { get; set; }
+
+        public string Name { get; set; }
+        public string Comment { get; set; }
+        public string Schema { get; set; }
+        public bool IsView { get; set; }
+        public string CleanName { get; set; }
+        public string ClassName { get; set; }
+        public string SequenceName { get; set; }
+        public bool Ignore { get; set; }
+
+        public ColumnText PK
+        {
+            get
+            {
+                return this.Columns.SingleOrDefault(x => x.IsPK);
+            }
+        }
+
+        public ColumnText GetColumn(string columnName)
+        {
+            return Columns.Single(x => string.Compare(x.Name, columnName, true) == 0);
+        }
+
+        public ColumnText this[string columnName]
+        {
+            get
+            {
+                return GetColumn(columnName);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 列属性
+    /// </summary>
+    public class ColumnText
+    {
+        public string Name { get; set; }
+        public string Comment { get; set; }
+        public string PropertyName { get; set; }
+        public string PropertyType { get; set; }
+        public bool IsPK { get; set; }
+        public bool IsNullable { get; set; }
+        public bool IsAutoIncrement { get; set; }
+
+        public bool IsIdentity { get; set; }
+
+        public bool Ignore { get; set; }
+
+    }
+
+    /// <summary>
+    /// 实体生成控制器
+    /// 分为 更新、 覆盖、 忽略 3种生成模式
+    /// 已知问题：
+    /// 1、读取表和字段的备注说明，只支持MSSQL，并且会耗费时间读取数据库
+    /// </summary>
+    public class GeneratorController
+    {
+        public GeneratorController(Microsoft.VisualStudio.TextTemplating.ITextTemplatingEngineHost host, StringBuilder template) : this(host.TemplateFile, template)
+        {
+            this.host = host;
+        }
+
+        public GeneratorController(string tplfn, StringBuilder template)
+        {
+            this.UseTableName = true;
+            this.Template = template;
+            this.TemplateFile = tplfn;
+            this.Mode = "更新";
+            this.Tables = new List<TableText>();
+            this.EntityBaseMask = "Entity<%ClassName%>";
+            this.Comment = true;
+        }
+
+        private StringBuilder logs = new StringBuilder();
+
+        private Microsoft.VisualStudio.TextTemplating.ITextTemplatingEngineHost host;
+
+        public string ConnectionString { get; set; }
+
+        public string ProviderName { get; set; }
+
+        public string TemplateFile { get; set; }
+
+        public string EntityPath { get; set; }
+
+        public string Namespace { get; set; }
+
+        /// <summary>
+        /// 强制使用表名作为类名和文件名
+        /// 强制使用字段名作为属性名
+        /// 默认：true
+        /// </summary>
+        public bool UseTableName { get; set; }
+
+
+        /// <summary>
+        /// 只生成选择的表
+        /// </summary>
+        public string[] SelectTables { get; set; }
+
+
+        public StringBuilder Template { get; set; }
+
+        /// <summary>
+        /// 分为：更新、 覆盖、 忽略
+        /// 更新模式，如果以前生成过实体类
+        /// 只尝试更新字段类型和添加新字段，
+        /// 其他部分不做变动
+        /// 覆盖模式，覆盖掉已经存在的类型
+        /// 忽略模式，忽略已经存在的类型
+        /// </summary>
+        public string Mode { get; set; }
+
+        public List<TableText> Tables { get; private set; }
+
+        /// <summary>
+        /// 实体基类
+        /// </summary>
+        public string EntityBase { get; set; }
+
+        /// <summary>
+        ///  实体基类模板
+        /// </summary>
+        public string EntityBaseMask { get; set; }
+        /// <summary>
+        /// 是否读取说明 默认：false 
+        /// 耗时较高
+        /// </summary>
+        public bool Comment { get; set; }
+
+        /// <summary>
+        /// 是否生成TableShow特性头
+        /// 默认：false ，true 则Comment为true
+        /// </summary>
+        public bool TableShow { get; set; }
+
+        private int success;
+        private int failed;
+
+        public string CheckNullable(ColumnText col)
+        {
+            string result = "";
+            if (col.IsNullable &&
+                col.PropertyType != "byte[]" &&
+                col.PropertyType != "string" &&
+                col.PropertyType != "Microsoft.SqlServer.Types.SqlGeography" &&
+                col.PropertyType != "Microsoft.SqlServer.Types.SqlGeometry"
+                )
+                result = "?";
+            return result;
+        }
+
+        public string UseName(TableText tab)
+        {
+            string r = this.UseTableName ? tab.Name : tab.ClassName;
+
+            if (!string.IsNullOrEmpty(this.EntityBaseMask))
+                this.EntityBase = this.EntityBaseMask.Replace("%ClassName%", r);
+
+            return r;
+        }
+
+        public string UseName(ColumnText col)
+        {
+            return this.UseTableName ? col.Name : col.PropertyName;
+        }
+
+        /// <summary>
+        /// 预处理
+        /// </summary>
+        /// <param name="tabs">获取的表集合</param>
+        /// <returns></returns>
+        public List<TableText> Preproccess()
+        {
+            this.logs.AppendLine($"{DateTime.Now}: Start Preproccess");
+
+            if (this.TableShow)
+                this.Comment = true;
+
+           if (this.Mode == "覆盖")
+                this.ReadCommnet();
+
+            this.logs.AppendLine($"{DateTime.Now}: End Preproccess");
+
+            return this.Tables;
+
+        }
+
+        public List<TableText> LoadTables()
+        {
+            this.logs.AppendLine($"{DateTime.Now}: Start LoadTables");
+            this.success = 0;
+            this.failed = 0;
+            try
+            {
+                this.Tables.Clear();
+
+                var factory = DbProviderFactories.GetFactory(ProviderName);
+                using (var conn = factory.CreateConnection())
+                {
+                    conn.ConnectionString = ConnectionString;
+                    conn.Open();
+
+                    SqlServerSchemaReader ssr = new SqlServerSchemaReader();
+                    ssr.ReadSchema(conn, factory, this.Tables, this.SelectTables);
+
+                }
+            
+                this.logs.AppendLine($"{DateTime.Now}: End LoadTables {this.Tables.Count()}");
+
+                return this.Tables;
+            }
+            catch (Exception e)            
+            {
+                this.logs.AppendFormat("LoadTables Error:");
+                this.logs.AppendLine(e.ToString());
+                return null;
+            }
+
+        }
+
+
+        /// <summary>
+        /// 根据表属性更新或忽略类型
+        /// </summary>
+        /// <param name="tab">表属性</param>
+        /// <returns>返回 true 表示已经处理过</returns>
+        public bool Update(TableText tab)
+        {
+            bool result = false;
+            string fn = this.FileName(this.UseName(tab));
+
+            if (File.Exists(fn))
+            {
+                switch (this.Mode)
+                {
+                    case "更新":
+                        string codes = File.ReadAllText(fn);
+                        string appendAnchor = null;
+                        StringBuilder newpro = new StringBuilder();
+                        foreach (var col in tab.Columns.Where(c => !c.Ignore))
+                        {
+                            string colName = this.UseName(col);
+                            string pa = $@"public (.+?) {colName} ";
+                            string newtype = $"public {col.PropertyType}{this.CheckNullable(col)} {colName}";
+
+                            if (!Regex.IsMatch(codes, pa))
+                            {
+                                ///新建类型
+                                if (this.TableShow || this.Comment)
+                                    col.Comment = this.getCommnet(tab.Name, col);
+                                if (!string.IsNullOrEmpty(col.Comment))
+                                {
+                                    newpro.AppendLine("/// <summary>");
+                                    newpro.AppendLine($"        /// {col.Comment}");
+                                    newpro.AppendLine("        /// </summary> ");
+                                    if (this.TableShow)
+                                    {
+                                        newpro.AppendLine("        [TableHeader]");
+                                        newpro.AppendLine($"        [Display(Name = \"{col.Comment}\")]");
+                                    }
+
+                                    newpro.AppendLine($"        {newtype} {{ get; set; }}");
+                                }
+                                else
+                                    newpro.AppendLine($"{newtype} {{ get; set; }}");
+                            }
+                            else
+                            {
+                                // System.Windows.Forms.MessageBox.Show(newtype);
+                                codes = Regex.Replace(codes, pa, newtype);
+                                appendAnchor = newtype;
+                            }
+                        }
+
+                        if (appendAnchor != null && newpro.Length > 0)
+                            codes = codes.Replace(appendAnchor, $"{newpro.ToString()}        {appendAnchor}");
+
+                        File.WriteAllText(fn, codes);
+                        result = true;
+                        break;
+
+                    case "忽略":
+                        result = true;
+                        break;
+                }
+            }
+            else
+            {
+                if (this.Comment || this.TableShow)
+                    readCommnet(tab);
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// 读取表或字段备注说明
+        /// 耗时较高
+        /// </summary>
+        public void ReadCommnet()
+        {
+            if (!this.Comment)
+                return;
+
+            foreach (var t in this.Tables.Where(t => !t.Ignore))
+            {
+                readCommnet(t);
+            }
+
+        }
+
+        private void readCommnet(TableText t)
+        {
+            t.Comment = this.getCommnet(t.Name);
+            foreach (var col in t.Columns)
+                col.Comment = this.getCommnet(t.Name, col);
+        }
+
+        private string getCommnet(string tab)
+        {
+            return this.getMSSqlCommnet(tab, null);
+        }
+
+        private string getCommnet(string tab, ColumnText field)
+        {
+            return this.getMSSqlCommnet(tab, field);
+        }
+
+        private string getMSSqlCommnet(string tab, ColumnText field)
+        {
+            string tabSql = $@"SELECT name = case when a.colorder = 1 then d.name 
+                else '' end, 
+                comment = case when a.colorder = 1 then isnull(f.value, '') 
+                else '' end
+                FROM syscolumns a
+                inner join sysobjects d
+                on a.id = d.id
+                and d.xtype = 'U'
+                and d.name <> 'sys.extended_properties'
+                left join sys.extended_properties f
+                on a.id = f.major_id
+                and f.minor_id = 0
+                Where(case when a.colorder = 1 then d.name else '' end) <> '' and d.name='{tab}'";
+
+            string fieldName = null;
+            if (field != null)
+                fieldName = field.Name;
+
+            string fieldSql = $@"SELECT 
+                tab = OBJECT_NAME(c.object_id), 
+                col = c.name, 
+                isidentity = c.is_identity,
+                comment = ex.value 
+                FROM 
+                sys.columns c 
+                LEFT OUTER JOIN 
+                sys.extended_properties ex 
+                ON 
+                ex.major_id = c.object_id 
+                AND ex.minor_id = c.column_id 
+                AND ex.name = 'MS_Description' 
+                WHERE 
+                OBJECTPROPERTY(c.object_id, 'IsMsShipped')=0 
+                AND OBJECT_NAME(c.object_id) = '{tab}' and c.name = '{fieldName}'
+                ORDER 
+                BY OBJECT_NAME(c.object_id), c.column_id";
+
+            string sql = tabSql;
+            if (field != null)
+                sql = fieldSql;
+
+            string result = null;
+
+            var factory = DbProviderFactories.GetFactory(ProviderName);
+            using (var conn = factory.CreateConnection())
+            {
+                conn.ConnectionString = ConnectionString;
+                conn.Open();
+
+                var cmd = factory.CreateCommand();
+                cmd.Connection = conn;
+                cmd.CommandText = sql;
+
+                using (var rdr = cmd.ExecuteReader())
+                {
+                    while (rdr.Read())
+                    {
+                        if (rdr["comment"] != DBNull.Value)
+                        {
+                            result = rdr["comment"].ToString();
+                        }
+
+                        if (field != null)
+                            field.IsIdentity = bool.Parse(rdr["isidentity"].ToString());
+
+                    }
+                }
+            }
+
+            return result;
+        }
+
+
+        /// <summary>
+        /// 根据类名获取文件名
+        /// </summary>
+        /// <param name="className"></param>
+        /// <returns></returns>
+
+        public string FileName(string className)
+        {
+            string fnDir = Path.GetDirectoryName(this.TemplateFile);		//获取tt模板目录
+            if (!string.IsNullOrEmpty(this.EntityPath))
+                fnDir = this.EntityPath;
+
+            string fn = Path.Combine(fnDir, string.Concat(className, ".cs"));
+
+            return fn;
+        }
+
+        /// <summary>
+        /// 获取已生成文件中的保留区
+        /// </summary>
+        /// <param name="className"></param>
+        /// <returns></returns>
+        public string GetRetain(string className)
+        {
+            string fn = FileName(className);
+            string result = string.Empty;
+            StringBuilder sb = new StringBuilder();
+            if (File.Exists(fn))
+            {
+                string codes = File.ReadAllText(fn);
+                MatchCollection ms = Regex.Matches(codes, @"(?is)\#region 保留区(.+?)#endregion");
+                if (ms.Count > 0)
+                {
+                    foreach (Match m in ms)
+                    {
+                        sb.AppendLine(m.Groups[1].Value.Trim());
+                    }
+
+                    result = sb.ToString().Trim();
+                }
+
+            }
+
+            return result;
+        }
+
+        public void Finish()
+        {
+            this.logs.AppendLine();
+            this.logs.AppendLine($"{DateTime.Now}: Finish Succeeded:{this.success} Failed:{this.failed}");
+            this.logs.AppendLine();
+            this.logs.AppendLine(new String('-',80));
+            this.Template.Clear();
+            this.Template.Append(this.logs);
+        }
+
+        /// <summary>
+        /// 存储模板内容
+        /// </summary>
+        /// <param name="className"></param>
+        public void Save(string className)
+        {
+            this.logs.AppendLine($"{DateTime.Now}: Start Save");
+
+            EnvDTE.ProjectItem templateProjectItem = null;
+
+            if (this.host is IServiceProvider)
+            {
+                EnvDTE.DTE dte = (EnvDTE.DTE)((IServiceProvider)host).GetService(typeof(EnvDTE.DTE));
+                templateProjectItem = dte.Solution.FindProjectItem(this.TemplateFile);
+            }
+
+            string fn = FileName(className);
+
+            try
+            {
+                //	将生成的文件添加到T4模板下关联
+                File.WriteAllText(fn, Template.ToString().Trim());
+
+                this.logs.AppendLine($"{DateTime.Now}: End Save {fn}");
+
+                this.success++;
+            }
+            catch (IOException e)
+            {
+                this.failed++;
+                this.logs.AppendFormat("Save {0} Error:", fn);
+                this.logs.AppendLine(e.ToString());
+            }
+
+            if (File.Exists(fn) && templateProjectItem != null && string.IsNullOrEmpty(this.EntityPath))
+            {
+                var item = templateProjectItem.ContainingProject.ProjectItems.AddFromFile(fn);
+                // vs2019 后 将生成文件加入到模板的子文件，需要如下设置
+                item.Properties.Item("DesignTime").Value = "True";
+                item.Properties.Item("AutoGen").Value = "True";
+                item.Properties.Item("DependentUpon").Value = Path.GetFileName(this.TemplateFile); ;
+            }
+
+        }
+    }
+
+#>
+

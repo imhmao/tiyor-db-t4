@@ -1,0 +1,67 @@
+﻿<#
+    // T4 实体类生成主程序
+ #>
+<#@ template language="C#" hostspecific="True" #>
+<#@ output extension="generator.txt" #>
+<#@ include file="DbContext.Generator.Controller.ttinclude" #>
+<#
+    
+	//return ""; //用于Visual Studio编辑时刻，生成时刻需注释此行。
+
+    /* 
+         实体生成控制器
+         分为 更新、 覆盖、 忽略 3中生成模式
+         已知问题：
+         1、读取表和字段的备注说明，只支持MSSQL，并且会耗费时间读取数据库
+    */
+    var GeneratorCtl = new GeneratorController(Host.TemplateFile,this.GenerationEnvironment);
+
+	GeneratorCtl.ConnectionString = "Data Source=.;Initial Catalog=db;Persist Security Info=True;User ID=sa;Password=pwd";
+	GeneratorCtl.ProviderName = "System.Data.SqlClient";
+    GeneratorCtl.Namespace = "Tiyor.Shearwall.Database";
+
+    
+    ///实体基类模板
+	GeneratorCtl.EntityBaseMask =null;
+
+
+    //生成的实体类文件路径，注释此行，默认生成在 tt 文件的路径下
+    //GeneratorCtl.EntityPath = @"D:\Tiyor.Shearwall\Model\";
+
+    //选择需要生成的表，注释此行将重新生成全部表和视图
+    GeneratorCtl.SelectTables = new string[] {"t_log"};
+
+    
+    // 分为：更新、 覆盖、 忽略
+    // 更新模式，如果以前生成过过实体类
+    // 只尝试更新字段类型和添加新字段，
+    // 其他部分不做变动
+    // 覆盖模式，覆盖掉已经存在的类型
+    // 忽略模式，忽略已经存在的类型
+    GeneratorCtl.Mode = "覆盖";
+
+
+    // 是否读取说明 默认：false 
+    // 会增加读取时间
+    GeneratorCtl.Comment = true;
+
+    // 是否生成TableShow特性头
+    // 默认：false ，true 则 Comment为true
+    GeneratorCtl.TableShow = true;
+
+    // Read schema   
+    var tables = GeneratorCtl.LoadTables();
+
+    ///预处理
+	GeneratorCtl.Preproccess();
+
+    // Generate output
+    if(tables.Count()>0)
+    {
+#>
+    <#@ include file="DbContext.Generator.ttinclude" #>
+<# 
+    }
+
+    MessageBox.Show($"生成完成:{tables.Count()}","T4模板");
+#>
