@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package >
+  <metadata>
+    <id>tiyor-db-t4</id>
+    <version>1.0.3</version>
+    <authors>imhm</authors>
+    <requireLicenseAcceptance>true</requireLicenseAcceptance>
+    <license type="expression">Apache-2.0</license>
+    <projectUrl>https://github.com/imhmao/tiyor-db-t4</projectUrl>
+    <description>使用T4模板生成 MSSQL 实体类，实体类使用的特性头适配 Tiyor.Shearwall 框架。</description>
+    <releaseNotes></releaseNotes>
+    <title>使用T4模板生成 MSSQL 实体类</title>
+    <language>C#</language>
+    <repository type="git" url="https://github.com/imhmao/tiyor-db-t4.git"  />
+    <copyright>$copyright$</copyright>
+    <tags>tiyor Shearwall t4</tags>
+  </metadata>
+</package>
