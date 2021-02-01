@@ -739,7 +739,6 @@
             this.logs.AppendLine();
             this.logs.AppendLine($"{DateTime.Now}: Finish Succeeded:{this.success} Failed:{this.failed}");
             this.logs.AppendLine();
-            this.logs.AppendLine(new String('-',80));
             this.Template.Clear();
             this.Template.Append(this.logs);
         }

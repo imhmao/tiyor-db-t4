@@ -2,7 +2,7 @@
     // T4 实体类生成主程序
  #>
 <#@ template language="C#" hostspecific="True" #>
-<#@ output extension="generator.txt" #>
+<#@ output extension="generator_log.txt" #>
 <#@ include file="DbContext.Generator.Controller.ttinclude" #>
 <#
     
