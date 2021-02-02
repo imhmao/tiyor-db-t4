@@ -18,11 +18,19 @@
 ```
   C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\Common7\IDE\TextTransform demo.tt
 ```
+
 6、如果使用 Visual Studio Code 编辑，可以安装 zbecknell.t4-support、formulahendry.code-runner 插件， settings.json 增加如下配置：
 ```
     "code-runner.executorMapByGlob": {
         "*.tt":"& \"C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Enterprise\\Common7\\IDE\\TextTransform\"",
     },
+```
+
+7、nuget_pack.bat 为nuget打包
+
+8、github_publish.bat nuget打包后，可以执行此批处理上传到Github
+```
+   Usage: github_pack.bat <Owner> <User Name> <Personal Token>
 ```
 
 ## 感谢
