@@ -25,29 +25,25 @@ if "%chk%" == "0" (
         set "msg=Nuget package not found."
         goto show
     ) else (
-
-        setlocal enabledelayedexpansion
-        for /f "tokens=*" %%j in (%file%) do (
-            set "tmp=%%j"
-            if not !tmp!.==. (
-            set "tmp=!tmp:%setOwner%=%strNewOwner%!"
-            set "tmp=!tmp:%strUsr%=%strNewUsr%!"
-            set "tmp=!tmp:%strPwd%=%strNewPwd%!"
-            echo !tmp!>>temp.txt
-            )
-        )
-        move temp.txt %output% >nul
-        if exist %output% (
-            dotnet nuget push "%dist%/!nupkg!" --api-key %strNewPwd% --source "github"
-            set "msg=finish"
-            goto show
-        ) else (
-            set "msg= %output% generate failed."
-            goto show
-        )
+        goto find
     )
   
 )
+:find
+    setlocal enabledelayedexpansion
+
+    for /f "tokens=*" %%j in (%file%) do (
+        set "ner=%%j"
+        if not !ner!.==. (
+        set "ner=!ner:%setOwner%=%strNewOwner%!"
+        set "ner=!ner:%strUsr%=%strNewUsr%!"
+        set "ner=!ner:%strPwd%=%strNewPwd%!"
+        echo !ner!>>temp.txt
+        )
+    )
+
+    move temp.txt %output% >nul
+    goto dotnet
 
 :show
     echo .
@@ -57,5 +53,16 @@ if "%chk%" == "0" (
     echo .
     goto end
 
+:dotnet
+ if exist %output% (
+            @REM echo dotnet nuget push "%dist%/!nupkg!" --api-key %strNewPwd% --source "github"
+            echo publishing ... 
+            dotnet nuget push "%dist%/!nupkg!" --api-key %strNewPwd% --source "github"
+            set "msg=finish"
+            goto show
+        ) else (
+            set "msg= %output% generate failed."
+            goto show
+        )
 :end
     if exist %output% del %output%
