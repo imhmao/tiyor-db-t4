@@ -779,11 +779,14 @@
 
             if (File.Exists(fn) && templateProjectItem != null && string.IsNullOrEmpty(this.EntityPath))
             {
-                var item = templateProjectItem.ContainingProject.ProjectItems.AddFromFile(fn);
-                // vs2019 后 将生成文件加入到模板的子文件，需要如下设置
-                item.Properties.Item("DesignTime").Value = "True";
-                item.Properties.Item("AutoGen").Value = "True";
-                item.Properties.Item("DependentUpon").Value = Path.GetFileName(this.TemplateFile); ;
+                try{
+                    templateProjectItem.ProjectItems.AddFromFile(fn);
+                    var item = templateProjectItem.ContainingProject.ProjectItems.AddFromFile(fn);
+                    // vs2019 .net core 将生成文件加入到模板的子文件，需要如下设置
+                    item.Properties.Item("DesignTime").Value = "True";
+                    item.Properties.Item("AutoGen").Value = "True";
+                    item.Properties.Item("DependentUpon").Value = Path.GetFileName(this.TemplateFile); 
+                }catch{}
             }
 
         }

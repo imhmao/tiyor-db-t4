@@ -2,7 +2,7 @@
 <package >
   <metadata>
     <id>tiyor-db-t4</id>
-    <version>1.0.6</version>
+    <version>1.0.7</version>
     <authors>王的强</authors>
     <requireLicenseAcceptance>true</requireLicenseAcceptance>
     <license type="expression">Apache-2.0</license>
